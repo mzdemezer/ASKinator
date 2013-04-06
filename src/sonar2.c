@@ -93,13 +93,13 @@ void load(state_t *state){
 	state->cny_left = norm_to_bool(state->state & CNY_LEFT);
 	state->cny_mid = norm_to_bool(state->state & CNY_MID);
 	state->cny_right = norm_to_bool(state->state & CNY_RIGHT);
-	state->echo = norm_to_bool(state->state & HC_SR04);
+	state->echo = norm_to_bool(!(state->state & HC_SR04));
 }
 
 void print_byte(unsigned char byte){
 	int i
 		,	one = 1;
-	
+
 	for(i = 0; i < 8; ++i, one <<= 1){
 		printf(" %u", norm_to_bool(byte & one));
 	}
@@ -187,7 +187,7 @@ void interrupt new_timer(){
 
 	handler(&state);
 
-	if( tick_counter >= 16384 ) {
+	if( tick_counter >= 5461 ) {
 		slow_tick += 1;
 		tick_counter = 0;
 		oldtimer();
@@ -254,21 +254,47 @@ void deinit_timer(){
 
 unsigned int counter = 0
 	,	stamp;
+state_t state_int;
 void interrupt count(){
+	asm cli
 	counter += 1;
 	stamp = state.cycle_ticks;
+	load(&state_int);
+	asm {
+		mov al, 20h
+		out 20h, al
+	}
+	asm sti
 }
 
 
 void interrupt (far *old_func)();
 void init(){
+	unsigned char s8259;
 	printf("Init\n");
+	asm cli
+	s8259 = receive_port(LPT_CONTROL);
+	send_port(LPT_CONTROL, s8259 | (1 << 4));
 	old_func = getvect(0x0f);
 	setvect(0x0f, count);
+	s8259 = receive_port(0x21);
+	send_port(0x21, s8259 & ~(1 << 7));
+	s8259 = receive_port(0x21);
+
+	asm sti
+
+	printf("8259 mask:\n");
+	print_byte(s8259);
+	printf("\n\n");
 }
 
 void deinit(){
+	unsigned char s8259;
+	asm cli
 	setvect(0x0f, old_func);
+	s8259 = receive_port(0x21);
+	send_port(0x21, s8259 | (1 << 7));
+	asm sti
 }
 
 
@@ -299,6 +325,10 @@ int main(){
 	printf("\nTime: %dus\nRange: %d cm\n", state.time, state.range);
 
 	printf("Ack7: %u, stamp: %u\n", counter, stamp);
+	printf("Range from IRQ7: %d", ((stamp - 49) * 10) / 58);
+
+	printf("\nState at int7\n");
+	print_state(&state_int);
 
 	printf("\n  END TIMESTAMP:  %d\n", time(NULL));
 
