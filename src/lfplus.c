@@ -22,6 +22,49 @@
 /**
  * Naglowek
  */
+
+/**
+ * Struktura przechowujaca stan
+ */
+typedef struct {
+	/**
+	 * Odczyt rejestrow LPT
+	 */
+	unsigned char data
+		,	state
+		,	control;
+
+	/**
+	 * Biezacy stan czujnikow
+	 */
+	bool ir_left
+		,	ir_right
+		,	cny_left
+		,	cny_mid
+		,	cny_right
+		,	echo;
+	
+	unsigned int range /** Interpretacja sygnalu sonara na odleglosc */
+		,	cycle_ticks /** 0-5965 (mod 5966), licznik tikow zegara (co ok. 10 mikrosekund daje rowno 60ms) */
+		,	io_ticks /** 0-496 (mod 497), licznik dla wczytywania stanu czujnikow (co ok. 5 ms - to daje 200 razy na sekunde) */
+		,	clock_ticks; /** 0-5461 + 1/3  -  tyle tikow szybszego zegara potrzeba na jeden pierwotnego */
+	unsigned char clock_thirds; /** 0-2 (mod 3) dla 1/3 taktu zagara */
+	bool clock_edge; /** wskazuje zbocze pierwotnego zegara */
+} state_t;
+state_t state;
+
+/**
+ * Struktura przechowujaca pierwotne
+ * funkcje stany scalakow
+ */
+typedef struct {
+	unsigned char old_lpt_ctrl
+		,	old_8259_state;
+	
+	void interrupt (far *old_clock)();
+	void interrupt (far *old_ack_int)();
+} primary_state_t;
+primary_state_t primary_state;
 void send_port(int port, unsigned char byte);
 unsigned char receive_port(int port);
 bool norm_to_bool(unsigned char arg);
@@ -54,54 +97,9 @@ void restore();
 void restore_clock();
 void restore_ack();
 
-/**
- * Struktura przechowujaca stan
- */
-typedef struct {
-	/**
-	 * Odczyt rejestrow LPT
-	 */
-	unsigned char data
-		,	state
-		,	control;
-	
-	/**
-	 * Biezacy stan czujnikow
-	 */
-	bool ir_left
-		,	ir_right
-		,	cny_left
-		,	cny_mid
-		,	cny_right
-		,	echo;
-	
-	unsigned int range /** Interpretacja sygnalu sonara na odleglosc */
-		,	cycle_ticks /** 0-5965 (mod 5966), licznik tikow zegara (co ok. 10 mikrosekund daje rowno 60ms) */
-		,	io_ticks /** 0-496 (mod 497), licznik dla wczytywania stanu czujnikow (co ok. 5 ms - to daje 200 razy na sekunde) */
-		,	clock_ticks; /** 0-5461 + 1/3  -  tyle tikow szybszego zegara potrzeba na jeden pierwotnego */
-	unsigned char clock_thirds; /** 0-2 (mod 3) dla 1/3 taktu zagara */
-	bool clock_edge; /** wskazuje zbocze pierwotnego zegara */
-} state_t;
-state_t state;
 
-/**
- * Struktura przechowujaca pierwotne
- * funkcje stany scalakow
- */
-typedef struct {
-	unsigned char old_lpt_ctrl
-		,	old_8259_state;
-	
-	void interrupt (far *old_clock)();
-	void interrupt (far *old_ack_int)();
-} primary_state_t;
-primary_state_t primary_state;
 
-void init_state(state_t *state){
-	state->clock_ticks = 0;
-	state->clock_thirds = 0;
-	state->clock_edge = false;
-}
+
 
 /**
  * Bit manipulation
@@ -163,7 +161,7 @@ void clock_inc(state_t *state){
 		state->clock_ticks = 0;
 		clock_raise_edge(state);
 	}else{
-		state_clock_ticks += 1;
+		state->clock_ticks += 1;
 	}
 }
 
@@ -179,7 +177,7 @@ void mod_counter(unsigned int *counter, unsigned int modulo){
 }
 
 void cycle_inc(state_t *state){
-	mod_counter(&state->cycle_ticks, CYCLE_MOD);
+	mod_counter(&state->cycle_ticks, SONAR_MOD);
 }
 
 void io_inc(state_t *state){
@@ -383,11 +381,13 @@ void clock_int_logic(state_t *state){
  * Interrupt vectors
  */
 /**
- * Potwierdzenie przyjścia przerwania definiowane jako wstawka assemblerowa
+ * Potwierdzenie przyjecia przerwania
  */
-#define EOI asm { \
-	mov al, 20h \
-	out 20h, al \
+void EOI(){
+	asm {
+		mov al, 20h
+		out 20h, al
+	}
 }
 
 #define DISABLE_INTERRUPTS asm cli
@@ -402,11 +402,11 @@ void interrupt clock_tick(){
 	clock_inc(&state);
 	clock_int_logic(&state);
 	
-	if(state->clock_edge){
+	if(state.clock_edge){
 		clock_fall_edge(&state);
 		primary_state.old_clock();
 	}else{
-		EOI
+		EOI();
 	}
 	ENABLE_INTERRUPTS
 }
@@ -420,14 +420,14 @@ void interrupt sonar_end_signal_receive(){
 	
 	ack_int_logic(&state);
 	
-	EOI
+	EOI();
 	ENABLE_INTERRUPTS
 }
 
 
 void init(state_t *state, primary_state_t *primary_state){
 	DISABLE_INTERRUPTS
-	
+
 	init_state(state);
 	init_clock(primary_state);
 	init_ack(primary_state);
@@ -436,7 +436,8 @@ void init(state_t *state, primary_state_t *primary_state){
 }
 
 void init_state(state_t *state){
-	load(&state);
+	send_port(LPT_DATA, 0);
+	load(state);
 	state->range = 4000;
 	state->cycle_ticks = 0;
 	state->io_ticks = 0;
@@ -475,25 +476,24 @@ void init_clock(primary_state_t *primary_state){
 }
 
 void init_ack(primary_state_t *primary_state){
-	unsigned char state_8259;
-	
 	primary_state->old_ack_int = getvect(0x0f);
 	setvect(0x0f, sonar_end_signal_receive);
-	
+
 	primary_state->old_lpt_ctrl = receive_port(LPT_CONTROL);
 	send_port(LPT_CONTROL, LIGHT(primary_state->old_lpt_ctrl, PIN(4)));
-	
-	primary_state->old_state_8259 = receive_port(0x21);
-	send_port(0x21, DARK(primary_state->old_state_8259, PIN(7)));
+
+	primary_state->old_8259_state = receive_port(0x21);
+	send_port(0x21, DARK(primary_state->old_8259_state, PIN(7)));
 }
 
 
 
 void restore(primary_state_t *primary_state){
 	DISABLE_INTERRUPTS
-	
+
 	restore_clock(primary_state);
 	restore_ack(primary_state);
+	send_port(LPT_DATA, 0);
 	
 	ENABLE_INTERRUPTS
 }
@@ -521,9 +521,31 @@ void restore_clock(primary_state_t *primary_state){
 void restore_ack(primary_state_t *primary_state){
 	setvect(0x0f, primary_state->old_ack_int);
 	send_port(LPT_CONTROL, primary_state->old_lpt_ctrl);
-	send_port(0x21, primary_state->old_state_8259);
+	send_port(0x21, primary_state->old_8259_state);
 }
 
+void print_byte(unsigned char byte){
+	int i
+		,	one = 1;
+
+	for(i = 0; i < 8; ++i, one <<= 1){
+		printf(" %u", norm_to_bool(byte & one));
+	}
+}
+
+void print_state(state_t *state){
+	printf("\n\nWHAT\t   0 1 2 3 4 5 6 7\n");
+	printf("DATA\t  ");
+	print_byte(state->data);
+
+	printf("\nSTAT\t  ");
+	print_byte(state->state);
+
+	printf("\nCTRL\t  ");
+	print_byte(state->control);
+	
+	printf("\nRANGE: %lf cm\n\n", state->range);
+}
 
 int main(){
 	bool still_work = true;
@@ -535,8 +557,10 @@ int main(){
 	while(still_work){
 		scanf(" %s", buf);
 		
-		if(strncmp(buf, "exit") == 0){
+		if(strncmp(buf, "exit", 4) == 0){
 			still_work = false;
+		}else if(strncmp(buf, "state", 5) == 0){
+			print_state(&state);
 		}
 		
 	}
