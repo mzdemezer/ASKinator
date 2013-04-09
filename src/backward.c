@@ -19,7 +19,7 @@ void send_port(int port, unsigned char byte){
 
 int main(){
 
-	send_port(LPT_DATA, 40);
+	send_port(LPT_DATA, 80);
 
 	return 0;
 }
