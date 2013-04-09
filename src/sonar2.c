@@ -34,8 +34,6 @@ typedef struct {
 		,	time
 		,	range;
 	unsigned int cycle_ticks;
-	
-
 
 } state_t;
 
@@ -325,7 +323,7 @@ int main(){
 	printf("\nTime: %dus\nRange: %d cm\n", state.time, state.range);
 
 	printf("Ack7: %u, stamp: %u\n", counter, stamp);
-	printf("Range from IRQ7: %d", ((stamp - 49) * 10) / 58);
+	printf("Range from IRQ7: %lf", ((double)(stamp - 49)) * 0.17339928);
 
 	printf("\nState at int7\n");
 	print_state(&state_int);
