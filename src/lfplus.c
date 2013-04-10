@@ -14,9 +14,11 @@
 #define SONAR_MOD 5966
 
 #define IO_MOD 497
-#define LOST_TIMEOUT 400
 
 #define CLOCK_MOD 5461
+
+#define AVOID_MOD 2000
+#define MIN_RANGE 4.0
 
 #define PIN(i) (1 << i)
 
@@ -28,7 +30,8 @@
  */
 typedef enum {
 	FOLLOW_LINE = 0
-,	AVOID
+,	AVOID_FIRST_TURN
+,	AVOID_RETURN
 } move_state_t;
 
 /**
@@ -55,7 +58,7 @@ typedef struct {
 	double range; /** Interpretacja sygnalu sonara na odleglosc */
 	unsigned int cycle_ticks /** 0-5965 (mod 5966), licznik tikow zegara (co ok. 10 mikrosekund daje rowno 60ms) */
 		,	io_ticks /** 0-496 (mod 497), licznik dla wczytywania stanu czujnikow (co ok. 5 ms - to daje 200 razy na sekunde) */
-		,	lost_timeout
+		,	avoid_ticks /** licznik dla pierwszej fazy omijania przeszkod */
 		,	clock_ticks; /** 0-5461 + 1/3  -  tyle tikow szybszego zegara potrzeba na jeden pierwotnego */
 	unsigned char clock_thirds; /** 0-2 (mod 3) dla 1/3 taktu zagara */
 	bool clock_edge; /** wskazuje zbocze pierwotnego zegara */
@@ -333,44 +336,54 @@ void move_logic(state_t *state){
 		engines_stop(state);
 	}else{
 		switch(state->move_state){
-			case FOLLOW_LINE:
-	if(state->range < 20.0){
-		engines_stop(state);
-	}else{
-		if(state->cny_left ^ state->cny_right){
-			state->lost_timeout = 0;
-			if(state->cny_mid){
-				if(state->cny_left){
-					engines_right_sharp(state);
-//					engines_right_soft(state);
+			case FOLLOW_LINE: {
+				if(state->range <= MIN_RANGE){
+					state->move_state = AVOID_FIRST_TURN;
 				}else{
-					engines_left_sharp(state);
-//					engines_left_soft(state);
-				}
-			}else{
-				if(state->cny_left){
-//					engines_right_soft(state);
-					engines_right_sharp(state);
-				}else{
-//					engines_left_soft(state);
-					engines_left_sharp(state);
+					if(state->cny_left ^ state->cny_right){
+						if(state->cny_left){
+							engines_right_sharp(state);
+						}else{
+							engines_left_sharp(state);
+						}
+					}else{
+						engines_forward(state);
+					}
 				}
 			}
-		}else{
-			engines_forward(state);
+			break;
+			case AVOID_FIRST_TURN: {
+				/*
+				if(state->range < 0
+				|| state->range > MIN_RANGE * 2 ){
+					engines_forward(state);
+					state->avoid_ticks += 1;
+				}else{
+					engines_left_sharp(state);
+					state->avoid_ticks /= 2;
+				}
+				
+				if(state->avoid_ticks >= AVOID_MOD
+				|| state->ir_left
+				|| state->ir_right ){
+					state->move_state = AVOID_RETURN;
+					state->avoid_ticks = 0;
+				}
+				*/
+				
+				
+				engines_left_sharp(state);
+				if(state->ir_left
+				|| state->ir_right ){
+					state->move_state = AVOID_RETURN;
+				}
+			}
+			break;
+			case AVOID_RETURN: {
+				state->enable = false;
+			}
+			break;
 		}
-/*
-		}else if(!state->cny_mid
-		&& state->cny_left){
-			state->lost_timeout = 0;
-			engines_forward(state);
-		}else if(state->lost_timeout >= LOST_TIMEOUT){
-			engines_stop(state);
-		}else{
-			state->lost_timeout += 1;
-		}
-*/
-//	}
 	}
 }
 
@@ -466,11 +479,12 @@ void init_state(state_t *state){
 	state->cycle_ticks = 0;
 	state->io_ticks = 0;
 
-	state->lost_timeout = 0;
 
 	state->clock_ticks = 0;
 	state->clock_thirds = 0;
 	state->clock_edge = false;
+
+	state->avoid_ticks = 0;
 
 	state->enable = true;
 }
