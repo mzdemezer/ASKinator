@@ -17,11 +17,14 @@
 
 #define CLOCK_MOD 5461
 
-#define AVOID_MOD 300
-#define AVOID_MIN_RANGE 11.0
-#define AVOID_TEST_SEGMENT 200
-#define AVOID_CHECK_TURN_LIMIT 110
-#define TURN90_LIMIT 147
+#define AVOID_MIN_RANGE 4.2
+#define AVOID_PASS_LIMIT 320
+#define AVOID_TEST_SEGMENT 80
+#define AVOID_CHECK_TURN_LIMIT 70
+#define TURN90_LIMIT 145
+#define THE_BIT_FURTHER 60
+//147
+#define AVOID_SLEEP 40
 
 #define PIN(i) (1 << i)
 
@@ -43,6 +46,7 @@ typedef enum {
 ,	AVOID_MID_PASS_OBSTACLE
 ,	AVOID_THIRD_TURN
 ,	AVOID_BACK_FORWARD
+,	AVOID_BIT_FURTHER
 ,	AVOID_FORTH_TURN
 ,	AVOID_RETURN
 } move_state_t;
@@ -78,9 +82,11 @@ typedef struct {
 
 	move_state_t move_state;
 	int avoid_counter
+		,	sleep_counter
 		,	avoid_obstacle_length;
 	bool avoid_flag
-		,	avoid_is_obstacle;
+		,	avoid_is_obstacle
+		,	sleep_flag;
 
 	bool enable;
 } state_t;
@@ -177,7 +183,7 @@ void clock_inc(state_t *state){
 	if((state->clock_thirds != 0 && state->clock_ticks == CLOCK_MOD - 1)
 	|| (state->clock_thirds == 0 && state->clock_ticks >= CLOCK_MOD) ){
 		clock_thirds_inc(state);
-		
+
 		state->clock_ticks = 0;
 		clock_raise_edge(state);
 	}else{
@@ -259,6 +265,7 @@ void load(state_t *state){
 
 void update_data(state_t *state){
 	send_port(LPT_DATA, state->data);
+	send_port(LPT_CONTROL, 20);
 }
 
 
@@ -348,16 +355,33 @@ void ack_int_logic(state_t *state){
 	state->range = ((double)(state->cycle_ticks - SONAR_ECHO_START)) * 0.17339928;
 }
 
+void stop_robot(state_t *state){
+	state->sleep_flag = true;
+	engines_stop(state);
+}
+
+void sustain_sleep(state_t *state){
+	if(state->sleep_counter >= AVOID_SLEEP - 1){
+		state->sleep_counter = 0;
+		state->sleep_flag = false;
+	}else{
+		state->sleep_counter += 1;
+	}
+}
+
 void move_logic(state_t *state){
 	if(!state->enable){
 		engines_stop(state);
+	}else if(state->sleep_flag){
+		sustain_sleep(state);
 	}else{
 		switch(state->move_state){
 			case FOLLOW_LINE: {
-				if(state->range <= MIN_RANGE){
+				if(state->range <= AVOID_MIN_RANGE){
 					state->move_state = AVOID_FIRST_TURN;
 					state->avoid_obstacle_length = 0;
 					state->avoid_counter = 0;
+					stop_robot(state);
 				}else{
 					if(state->cny_left ^ state->cny_right){
 						if(state->cny_left){
@@ -376,8 +400,10 @@ void move_logic(state_t *state){
 				if(state->avoid_counter >= TURN90_LIMIT){
 					state->move_state = AVOID_FRONT_FORWARD;
 					state->avoid_counter = 0;
+					stop_robot(state);
+				}else{
+					engines_left_sharp(state);
 				}
-				engines_left_sharp(state);
 			}
 			break;
 			case AVOID_FRONT_FORWARD: {
@@ -386,27 +412,35 @@ void move_logic(state_t *state){
 					state->move_state = AVOID_FRONT_CHECK;
 					state->avoid_counter = 0;
 					state->avoid_flag = true;
+					stop_robot(state);
+				}else{
+					engines_forward(state);
 				}
 			}
 			break;
 			case AVOID_FRONT_CHECK: {
-				if(state->avoid_flag){
+				if(state->sleep_flag){
+					sustain_sleep(state);
+				}else if(state->avoid_flag){
 					engines_right_sharp(state);
 					state->avoid_counter += 1;
-					
+
 					if(state->ir_right){
 						state->avoid_flag = false;
 						state->avoid_is_obstacle = true;
+						stop_robot(state);
 					}else if(state->avoid_counter >= AVOID_CHECK_TURN_LIMIT){
 						state->avoid_flag = false;
 						state->avoid_is_obstacle = false;
+						stop_robot(state);
 					}
 				}else{
 					engines_left_sharp(state);
 					state->avoid_counter -= 1;
-					
+
 					if(state->avoid_counter <= 0){
 						state->avoid_counter = 0;
+						stop_robot(state);
 						if(state->avoid_is_obstacle){
 							state->avoid_obstacle_length += 1;
 							state->move_state = AVOID_FRONT_FORWARD;
@@ -422,8 +456,10 @@ void move_logic(state_t *state){
 				if(state->avoid_counter >= AVOID_PASS_LIMIT){
 					state->move_state = AVOID_SECOND_TURN;
 					state->avoid_counter = 0;
+					stop_robot(state);
+				}else{
+					engines_forward(state);
 				}
-				engines_forward(state);
 			}
 			break;
 			case AVOID_SECOND_TURN: {
@@ -431,8 +467,10 @@ void move_logic(state_t *state){
 				if(state->avoid_counter >= TURN90_LIMIT){
 					state->move_state = AVOID_MID_FORWARD;
 					state->avoid_counter = 0;
+					stop_robot(state);
+				}else{
+					engines_right_sharp(state);
 				}
-				engines_right_sharp(state);
 			}
 			break;
 			case AVOID_MID_FORWARD: {
@@ -441,6 +479,9 @@ void move_logic(state_t *state){
 					state->move_state = AVOID_MID_CHECK;
 					state->avoid_counter = 0;
 					state->avoid_flag = true;
+					stop_robot(state);
+				}else{
+					engines_forward(state);
 				}
 			}
 			break;
@@ -448,20 +489,23 @@ void move_logic(state_t *state){
 				if(state->avoid_flag){
 					engines_right_sharp(state);
 					state->avoid_counter += 1;
-					
+
 					if(state->ir_right){
 						state->avoid_flag = false;
 						state->avoid_is_obstacle = true;
+						stop_robot(state);
 					}else if(state->avoid_counter >= AVOID_CHECK_TURN_LIMIT){
 						state->avoid_flag = false;
 						state->avoid_is_obstacle = false;
+						stop_robot(state);
 					}
 				}else{
 					engines_left_sharp(state);
 					state->avoid_counter -= 1;
-					
+
 					if(state->avoid_counter <= 0){
 						state->avoid_counter = 0;
+						stop_robot(state);
 						if(state->avoid_is_obstacle){
 							state->avoid_obstacle_length += 1;
 							state->move_state = AVOID_MID_FORWARD;
@@ -474,47 +518,55 @@ void move_logic(state_t *state){
 			break;
 			case AVOID_MID_PASS_OBSTACLE: {
 				state->avoid_counter += 1;
-				if(state->avoid_counter >= AVOID_PASS_LIMIT){
+				if(state->avoid_counter >= AVOID_PASS_LIMIT + 100){
 					state->move_state = AVOID_THIRD_TURN;
 					state->avoid_counter = 0;
+					stop_robot(state);
+				}else{
+					engines_forward(state);
 				}
-				engines_forward(state);
 			}
 			break;
 			case AVOID_THIRD_TURN: {
 				state->avoid_counter += 1;
-				if(state->avoid_counter >= TURN90_LIMIT){
+				if(state->avoid_counter >= TURN90_LIMIT * 0.8){
 					state->move_state = AVOID_BACK_FORWARD;
 					state->avoid_counter = 0;
+					stop_robot(state);
+				}else{
+					engines_right_sharp(state);
 				}
-				engines_right_sharp(state);
 			}
 			break;
 			case AVOID_BACK_FORWARD: {
-				if(!(state->cny_left
-					&& state->cny_right
-					&& state->cny_mid)){
+				engines_forward(state);
+				if(!state->cny_mid){
+					state->move_state = AVOID_BIT_FURTHER;
+					state->avoid_counter = 0;
+
+				}
+			}
+			break;
+			case AVOID_BIT_FURTHER: {
+				state->avoid_counter += 1;
+				if(state->avoid_counter >= THE_BIT_FURTHER){
+					stop_robot(state);
 					state->move_state = AVOID_FORTH_TURN;
 					state->avoid_counter = 0;
-				}
-				state->avoid_counter += 1;
-				if(state->avoid_counter >= AVOID_TEST_SEGMENT){
-					state->avoid_counter = 0;
-					if(state->avoid_obstacle_length == 0){
-						state->move_state = AVOID_RETURN;
-					}else{
-						state->avoid_obstacle_length -= 1;
-					}
+				}else{
+					engines_forward(state);
 				}
 			}
 			break;
 			case AVOID_FORTH_TURN: {
 				state->avoid_counter += 1;
-				if(state->avoid_counter >= (int)(TURN90_LIMIT * 0.8)){
-					state->move_state = AVOID_RETURN;
+				if(state->avoid_counter >= TURN90_LIMIT * 1.3){
+					state->move_state = FOLLOW_LINE;
 					state->avoid_counter = 0;
+					engines_forward(state);
+				}else{
+					engines_left_sharp(state);
 				}
-				engines_left_sharp(state);
 			}
 			break;
 			case AVOID_RETURN: {
@@ -523,6 +575,7 @@ void move_logic(state_t *state){
 					&& state->cny_mid)){
 					state->move_state = FOLLOW_LINE;
 					state->avoid_counter = 0;
+					state->enable = false;
 				}
 				engines_left_sharp(state);
 				state->avoid_counter += 1;
@@ -619,6 +672,7 @@ void init(state_t *state, primary_state_t *primary_state){
 
 void init_state(state_t *state){
 	send_port(LPT_DATA, 0);
+	send_port(LPT_CONTROL, 4);
 	load(state);
 	state->range = 4000;
 	state->cycle_ticks = 0;
@@ -631,6 +685,7 @@ void init_state(state_t *state){
 
 	state->avoid_ticks = 0;
 	state->avoid_counter = 0;
+	state->sleep_counter = 0;
 
 	state->enable = true;
 }
@@ -730,25 +785,26 @@ void print_state(state_t *state){
 
 	printf("\nCTRL\t  ");
 	print_byte(state->control);
-	
+
 	printf("\nRANGE: %lf cm\n\n", state->range);
 }
 
 int main(){
 	bool still_work = true;
 	char buf[512];
-	
+
 	init(&state, &primary_state);
-	
-	
+
+
 	while(still_work){
 		scanf(" %s", buf);
-		
+
 		if(strncmp(buf, "exit", 4) == 0){
 			still_work = false;
 		}else if(strncmp(buf, "state", 5) == 0){
 			print_state(&state);
 		}else if(strncmp(buf, "start", 5) == 0){
+			state.move_state = FOLLOW_LINE;
 			state.enable = true;
 		}else if(strncmp(buf, "stop", 4) == 0){
 			state.enable = false;
