@@ -20,7 +20,7 @@
 #define AVOID_MOD 300
 #define MIN_RANGE 11.0
 
-#define TURN_LIMIT 100
+#define TURN90_LIMIT 147
 
 #define PIN(i) (1 << i)
 
@@ -338,7 +338,7 @@ void ack_int_logic(state_t *state){
 bool still_work = true;
 void move_logic(state_t *state){
 	state->turn_counter += 1;
-	if(state->turn_counter >= TURN_LIMIT){
+	if(state->turn_counter >= TURN90_LIMIT){
 		still_work = false;
 	}
 	engines_left_sharp(state);

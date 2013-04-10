@@ -18,7 +18,10 @@
 #define CLOCK_MOD 5461
 
 #define AVOID_MOD 300
-#define MIN_RANGE 11.0
+#define AVOID_MIN_RANGE 11.0
+#define AVOID_TEST_SEGMENT 200
+#define AVOID_CHECK_TURN_LIMIT 110
+#define TURN90_LIMIT 147
 
 #define PIN(i) (1 << i)
 
@@ -31,7 +34,16 @@
 typedef enum {
 	FOLLOW_LINE = 0
 ,	AVOID_FIRST_TURN
-,	AVOID_MID
+,	AVOID_FRONT_FORWARD
+,	AVOID_FRONT_CHECK
+,	AVOID_FRONT_PASS_OBSTACLE
+,	AVOID_SECOND_TURN
+,	AVOID_MID_FORWARD
+,	AVOID_MID_CHECK
+,	AVOID_MID_PASS_OBSTACLE
+,	AVOID_THIRD_TURN
+,	AVOID_BACK_FORWARD
+,	AVOID_FORTH_TURN
 ,	AVOID_RETURN
 } move_state_t;
 
@@ -65,7 +77,10 @@ typedef struct {
 	bool clock_edge; /** wskazuje zbocze pierwotnego zegara */
 
 	move_state_t move_state;
-	int turn_counter;
+	int avoid_counter
+		,	avoid_obstacle_length;
+	bool avoid_flag
+		,	avoid_is_obstacle;
 
 	bool enable;
 } state_t;
@@ -341,6 +356,8 @@ void move_logic(state_t *state){
 			case FOLLOW_LINE: {
 				if(state->range <= MIN_RANGE){
 					state->move_state = AVOID_FIRST_TURN;
+					state->avoid_obstacle_length = 0;
+					state->avoid_counter = 0;
 				}else{
 					if(state->cny_left ^ state->cny_right){
 						if(state->cny_left){
@@ -355,71 +372,160 @@ void move_logic(state_t *state){
 			}
 			break;
 			case AVOID_FIRST_TURN: {
-
-				if(state->range < 0
-				|| state->range > MIN_RANGE * 2 ){
-					engines_forward(state);
-					state->avoid_ticks += 1;
-				}else{
-					engines_left_sharp(state);
-					state->avoid_ticks /= 2;
+				state->avoid_counter += 1;
+				if(state->avoid_counter >= TURN90_LIMIT){
+					state->move_state = AVOID_FRONT_FORWARD;
+					state->avoid_counter = 0;
 				}
-
-				if(state->avoid_ticks >= AVOID_MOD
-				|| state->ir_left
-				|| state->ir_right ){
-					state->move_state = AVOID_MID;
-					state->avoid_ticks = 0;
-				}
-
-
-
-				/*engines_left_sharp(state);
-				if(state->ir_left
-				|| state->ir_right ){
-					state->move_state = AVOID_RETURN;
-				}
-				*/
+				engines_left_sharp(state);
 			}
 			break;
-			case AVOID_MID: {
-				if(state->ir_right){
-					state->avoid_ticks += 1;
-					if(state->avoid_ticks >= 10){
-						engines_left_sharp(state);
-						state->turn_counter -= 1;
-					}else{
-						engines_right_soft(state);
-						state->turn_counter += 1;
+			case AVOID_FRONT_FORWARD: {
+				state->avoid_counter += 1;
+				if(state->avoid_counter >= AVOID_TEST_SEGMENT){
+					state->move_state = AVOID_FRONT_CHECK;
+					state->avoid_counter = 0;
+					state->avoid_flag = true;
+				}
+			}
+			break;
+			case AVOID_FRONT_CHECK: {
+				if(state->avoid_flag){
+					engines_right_sharp(state);
+					state->avoid_counter += 1;
+					
+					if(state->ir_right){
+						state->avoid_flag = false;
+						state->avoid_is_obstacle = true;
+					}else if(state->avoid_counter >= AVOID_CHECK_TURN_LIMIT){
+						state->avoid_flag = false;
+						state->avoid_is_obstacle = false;
 					}
 				}else{
-					state->avoid_ticks = 0;
-					engines_right_soft(state);
-					state->turn_counter += 1;
+					engines_left_sharp(state);
+					state->avoid_counter -= 1;
+					
+					if(state->avoid_counter <= 0){
+						state->avoid_counter = 0;
+						if(state->avoid_is_obstacle){
+							state->avoid_obstacle_length += 1;
+							state->move_state = AVOID_FRONT_FORWARD;
+						}else{
+							state->move_state = AVOID_FRONT_PASS_OBSTACLE;
+						}
+					}
 				}
-
+			}
+			break;
+			case AVOID_FRONT_PASS_OBSTACLE: {
+				state->avoid_counter += 1;
+				if(state->avoid_counter >= AVOID_PASS_LIMIT){
+					state->move_state = AVOID_SECOND_TURN;
+					state->avoid_counter = 0;
+				}
+				engines_forward(state);
+			}
+			break;
+			case AVOID_SECOND_TURN: {
+				state->avoid_counter += 1;
+				if(state->avoid_counter >= TURN90_LIMIT){
+					state->move_state = AVOID_MID_FORWARD;
+					state->avoid_counter = 0;
+				}
+				engines_right_sharp(state);
+			}
+			break;
+			case AVOID_MID_FORWARD: {
+				state->avoid_counter += 1;
+				if(state->avoid_counter >= AVOID_TEST_SEGMENT){
+					state->move_state = AVOID_MID_CHECK;
+					state->avoid_counter = 0;
+					state->avoid_flag = true;
+				}
+			}
+			break;
+			case AVOID_MID_CHECK: {
+				if(state->avoid_flag){
+					engines_right_sharp(state);
+					state->avoid_counter += 1;
+					
+					if(state->ir_right){
+						state->avoid_flag = false;
+						state->avoid_is_obstacle = true;
+					}else if(state->avoid_counter >= AVOID_CHECK_TURN_LIMIT){
+						state->avoid_flag = false;
+						state->avoid_is_obstacle = false;
+					}
+				}else{
+					engines_left_sharp(state);
+					state->avoid_counter -= 1;
+					
+					if(state->avoid_counter <= 0){
+						state->avoid_counter = 0;
+						if(state->avoid_is_obstacle){
+							state->avoid_obstacle_length += 1;
+							state->move_state = AVOID_MID_FORWARD;
+						}else{
+							state->move_state = AVOID_MID_PASS_OBSTACLE;
+						}
+					}
+				}
+			}
+			break;
+			case AVOID_MID_PASS_OBSTACLE: {
+				state->avoid_counter += 1;
+				if(state->avoid_counter >= AVOID_PASS_LIMIT){
+					state->move_state = AVOID_THIRD_TURN;
+					state->avoid_counter = 0;
+				}
+				engines_forward(state);
+			}
+			break;
+			case AVOID_THIRD_TURN: {
+				state->avoid_counter += 1;
+				if(state->avoid_counter >= TURN90_LIMIT){
+					state->move_state = AVOID_BACK_FORWARD;
+					state->avoid_counter = 0;
+				}
+				engines_right_sharp(state);
+			}
+			break;
+			case AVOID_BACK_FORWARD: {
 				if(!(state->cny_left
 					&& state->cny_right
-					&& state->cny_mid) ){
-					state->move_state = FOLLOW_LINE;
-					state->turn_counter = 0;
+					&& state->cny_mid)){
+					state->move_state = AVOID_FORTH_TURN;
+					state->avoid_counter = 0;
 				}
-				if(state->turn_counter > 600){
+				state->avoid_counter += 1;
+				if(state->avoid_counter >= AVOID_TEST_SEGMENT){
+					state->avoid_counter = 0;
+					if(state->avoid_obstacle_length == 0){
+						state->move_state = AVOID_RETURN;
+					}else{
+						state->avoid_obstacle_length -= 1;
+					}
+				}
+			}
+			break;
+			case AVOID_FORTH_TURN: {
+				state->avoid_counter += 1;
+				if(state->avoid_counter >= (int)(TURN90_LIMIT * 0.8)){
 					state->move_state = AVOID_RETURN;
-					state->turn_counter = 0;
+					state->avoid_counter = 0;
 				}
+				engines_left_sharp(state);
 			}
 			break;
 			case AVOID_RETURN: {
 				if(!(state->cny_left
 					&& state->cny_right
-					&& state->cny_mid)
-				|| state->turn_counter >= 40 ){
+					&& state->cny_mid)){
 					state->move_state = FOLLOW_LINE;
-					state->turn_counter = 0;
+					state->avoid_counter = 0;
 				}
-				engines_left_soft(state);
-				state->turn_counter += 1;
+				engines_left_sharp(state);
+				state->avoid_counter += 1;
 			}
 			break;
 		}
@@ -524,7 +630,7 @@ void init_state(state_t *state){
 	state->clock_edge = false;
 
 	state->avoid_ticks = 0;
-	state->turn_counter = 0;
+	state->avoid_counter = 0;
 
 	state->enable = true;
 }

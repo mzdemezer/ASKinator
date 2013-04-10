@@ -20,7 +20,7 @@
 #define AVOID_MOD 300
 #define MIN_RANGE 11.0
 
-#define TURN90_LIMIT 147
+#define TURN_LIMIT 100
 
 #define PIN(i) (1 << i)
 
@@ -349,7 +349,7 @@ void move_logic(state_t *state){
 			obst = true;
 			test = false;
 			max_turn = turn;
-		}else if(turn >= TURN90_LIMIT * 0.6){
+		}else if(turn >= TURN_LIMIT){
 			obst = false;
 			test = false;
 			max_turn = turn;
