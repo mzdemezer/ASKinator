@@ -14,6 +14,7 @@
 #define SONAR_MOD 5966
 
 #define IO_MOD 497
+#define LOST_TIMEOUT 400
 
 #define CLOCK_MOD 5461
 
@@ -22,6 +23,13 @@
 /**
  * Naglowek
  */
+/**
+ * Typ wyliczeniowy dla stanu robota
+ */
+typedef enum {
+	FOLLOW_LINE = 0
+,	AVOID
+} move_state_t;
 
 /**
  * Struktura przechowujaca stan
@@ -43,13 +51,18 @@ typedef struct {
 		,	cny_mid
 		,	cny_right
 		,	echo;
-	
-	unsigned int range /** Interpretacja sygnalu sonara na odleglosc */
-		,	cycle_ticks /** 0-5965 (mod 5966), licznik tikow zegara (co ok. 10 mikrosekund daje rowno 60ms) */
+
+	double range; /** Interpretacja sygnalu sonara na odleglosc */
+	unsigned int cycle_ticks /** 0-5965 (mod 5966), licznik tikow zegara (co ok. 10 mikrosekund daje rowno 60ms) */
 		,	io_ticks /** 0-496 (mod 497), licznik dla wczytywania stanu czujnikow (co ok. 5 ms - to daje 200 razy na sekunde) */
+		,	lost_timeout
 		,	clock_ticks; /** 0-5461 + 1/3  -  tyle tikow szybszego zegara potrzeba na jeden pierwotnego */
 	unsigned char clock_thirds; /** 0-2 (mod 3) dla 1/3 taktu zagara */
 	bool clock_edge; /** wskazuje zbocze pierwotnego zegara */
+
+	move_state_t move_state;
+
+	bool enable;
 } state_t;
 state_t state;
 
@@ -60,13 +73,13 @@ state_t state;
 typedef struct {
 	unsigned char old_lpt_ctrl
 		,	old_8259_state;
-	
+
 	void interrupt (far *old_clock)();
 	void interrupt (far *old_ack_int)();
 } primary_state_t;
 primary_state_t primary_state;
 void send_port(int port, unsigned char byte);
-unsigned char receive_port(int port);
+unsigned char reeive_port(int port);
 bool norm_to_bool(unsigned char arg);
 
 
@@ -86,19 +99,6 @@ void clock_raise_edge(state_t *state);
 void clock_fall_edge(state_t *state);
 void clock_thirds_inc(state_t *state);
 void clock_inc(state_t *state);
-
-
-void init();
-void init_state(state_t *state);
-void init_clock();
-void init_ack();
-
-void restore();
-void restore_clock();
-void restore_ack();
-
-
-
 
 
 /**
@@ -169,7 +169,7 @@ void clock_inc(state_t *state){
  * Sonar cycle
  */
 void mod_counter(unsigned int *counter, unsigned int modulo){
-	if(*counter == modulo - 1){
+	if(*counter >= modulo - 1){
 		*counter = 0;
 	}else{
 		*counter += 1;
@@ -191,6 +191,9 @@ void io_inc(state_t *state){
  * Wysyla   byte   pod   port
  */
 void send_port(int port, unsigned char byte){
+/**
+ * Kod batonikowy :)
+ */
 	int port_in = port;
 	unsigned char byte_in = byte;
 	asm {
@@ -326,27 +329,48 @@ void ack_int_logic(state_t *state){
 }
 
 void move_logic(state_t *state){
+	if(!state->enable){
+		engines_stop(state);
+	}else{
+		switch(state->move_state){
+			case FOLLOW_LINE:
 	if(state->range < 20.0){
 		engines_stop(state);
 	}else{
 		if(state->cny_left ^ state->cny_right){
+			state->lost_timeout = 0;
 			if(state->cny_mid){
 				if(state->cny_left){
 					engines_right_sharp(state);
+//					engines_right_soft(state);
 				}else{
 					engines_left_sharp(state);
+//					engines_left_soft(state);
 				}
 			}else{
 				if(state->cny_left){
-					engines_right_soft(state);
+//					engines_right_soft(state);
+					engines_right_sharp(state);
 				}else{
-					engines_left_soft(state);
+//					engines_left_soft(state);
+					engines_left_sharp(state);
 				}
 			}
-		}else if(!state->cny_mid
-		&& !state->cny_left){
+		}else{
 			engines_forward(state);
 		}
+/*
+		}else if(!state->cny_mid
+		&& state->cny_left){
+			state->lost_timeout = 0;
+			engines_forward(state);
+		}else if(state->lost_timeout >= LOST_TIMEOUT){
+			engines_stop(state);
+		}else{
+			state->lost_timeout += 1;
+		}
+*/
+//	}
 	}
 }
 
@@ -401,7 +425,7 @@ void interrupt clock_tick(){
 	
 	clock_inc(&state);
 	clock_int_logic(&state);
-	
+
 	if(state.clock_edge){
 		clock_fall_edge(&state);
 		primary_state.old_clock();
@@ -441,11 +465,14 @@ void init_state(state_t *state){
 	state->range = 4000;
 	state->cycle_ticks = 0;
 	state->io_ticks = 0;
-	
+
+	state->lost_timeout = 0;
+
 	state->clock_ticks = 0;
 	state->clock_thirds = 0;
 	state->clock_edge = false;
-	
+
+	state->enable = true;
 }
 
 /**
@@ -561,11 +588,15 @@ int main(){
 			still_work = false;
 		}else if(strncmp(buf, "state", 5) == 0){
 			print_state(&state);
+		}else if(strncmp(buf, "start", 5) == 0){
+			state.enable = true;
+		}else if(strncmp(buf, "stop", 4) == 0){
+			state.enable = false;
 		}
-		
+
 	}
-	
-	
+
+
 	restore(&primary_state);
 	
 	return 0;
