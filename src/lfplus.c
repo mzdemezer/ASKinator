@@ -17,8 +17,8 @@
 
 #define CLOCK_MOD 5461
 
-#define AVOID_MOD 2000
-#define MIN_RANGE 4.0
+#define AVOID_MOD 300
+#define MIN_RANGE 11.0
 
 #define PIN(i) (1 << i)
 
@@ -31,6 +31,7 @@
 typedef enum {
 	FOLLOW_LINE = 0
 ,	AVOID_FIRST_TURN
+,	AVOID_MID
 ,	AVOID_RETURN
 } move_state_t;
 
@@ -64,6 +65,7 @@ typedef struct {
 	bool clock_edge; /** wskazuje zbocze pierwotnego zegara */
 
 	move_state_t move_state;
+	int turn_counter;
 
 	bool enable;
 } state_t;
@@ -353,7 +355,7 @@ void move_logic(state_t *state){
 			}
 			break;
 			case AVOID_FIRST_TURN: {
-				/*
+
 				if(state->range < 0
 				|| state->range > MIN_RANGE * 2 ){
 					engines_forward(state);
@@ -362,25 +364,62 @@ void move_logic(state_t *state){
 					engines_left_sharp(state);
 					state->avoid_ticks /= 2;
 				}
-				
+
 				if(state->avoid_ticks >= AVOID_MOD
 				|| state->ir_left
 				|| state->ir_right ){
-					state->move_state = AVOID_RETURN;
+					state->move_state = AVOID_MID;
 					state->avoid_ticks = 0;
 				}
-				*/
-				
-				
-				engines_left_sharp(state);
+
+
+
+				/*engines_left_sharp(state);
 				if(state->ir_left
 				|| state->ir_right ){
 					state->move_state = AVOID_RETURN;
 				}
+				*/
+			}
+			break;
+			case AVOID_MID: {
+				if(state->ir_right){
+					state->avoid_ticks += 1;
+					if(state->avoid_ticks >= 10){
+						engines_left_sharp(state);
+						state->turn_counter -= 1;
+					}else{
+						engines_right_soft(state);
+						state->turn_counter += 1;
+					}
+				}else{
+					state->avoid_ticks = 0;
+					engines_right_soft(state);
+					state->turn_counter += 1;
+				}
+
+				if(!(state->cny_left
+					&& state->cny_right
+					&& state->cny_mid) ){
+					state->move_state = FOLLOW_LINE;
+					state->turn_counter = 0;
+				}
+				if(state->turn_counter > 600){
+					state->move_state = AVOID_RETURN;
+					state->turn_counter = 0;
+				}
 			}
 			break;
 			case AVOID_RETURN: {
-				state->enable = false;
+				if(!(state->cny_left
+					&& state->cny_right
+					&& state->cny_mid)
+				|| state->turn_counter >= 40 ){
+					state->move_state = FOLLOW_LINE;
+					state->turn_counter = 0;
+				}
+				engines_left_soft(state);
+				state->turn_counter += 1;
 			}
 			break;
 		}
@@ -485,6 +524,7 @@ void init_state(state_t *state){
 	state->clock_edge = false;
 
 	state->avoid_ticks = 0;
+	state->turn_counter = 0;
 
 	state->enable = true;
 }
